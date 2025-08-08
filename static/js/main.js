@@ -223,6 +223,84 @@ async function processQuery() {
     }
 }
 
+// Batch query processing
+async function processBatchQuery() {
+    const urlInput = document.getElementById('batchDocumentUrl');
+    const questionsInput = document.getElementById('batchQuestions');
+    const resultsDiv = document.getElementById('batchResults');
+    
+    const url = urlInput.value.trim();
+    const questionsText = questionsInput.value.trim();
+    
+    if (!url) {
+        showAlert('Please enter a document URL', 'warning');
+        return;
+    }
+    
+    if (!questionsText) {
+        showAlert('Please enter questions', 'warning');
+        return;
+    }
+    
+    if (!isValidUrl(url)) {
+        showAlert('Please enter a valid URL', 'warning');
+        return;
+    }
+    
+    // Convert questions from text to array
+    const questions = questionsText.split('\n').filter(q => q.trim()).map(q => q.trim());
+    
+    if (questions.length === 0) {
+        showAlert('Please enter at least one question', 'warning');
+        return;
+    }
+    
+    showProcessingModal('Processing Batch Query...', `Processing ${questions.length} questions from document.`);
+    resultsDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing batch query...';
+    
+    try {
+        const requestData = {
+            documents: url,
+            questions: questions
+        };
+        
+        const result = await apiCall('/hackrx/run', {
+            method: 'POST',
+            body: JSON.stringify(requestData)
+        });
+        
+        hideProcessingModal();
+        
+        // Display results in a formatted way
+        let resultsHtml = '<div class="batch-results">';
+        resultsHtml += `<h6 class="mb-3"><i class="fas fa-check-circle text-success me-2"></i>Processed ${questions.length} questions</h6>`;
+        
+        if (result.answers && Array.isArray(result.answers)) {
+            questions.forEach((question, index) => {
+                const answer = result.answers[index] || 'No answer available';
+                resultsHtml += `
+                    <div class="mb-3 p-3 border rounded">
+                        <div class="fw-bold text-primary mb-2">Q${index + 1}: ${question}</div>
+                        <div class="text-dark">${answer}</div>
+                    </div>
+                `;
+            });
+        } else {
+            resultsHtml += '<div class="alert alert-warning">No answers received from the API</div>';
+        }
+        
+        resultsHtml += '</div>';
+        resultsDiv.innerHTML = resultsHtml;
+        
+        showAlert(`Successfully processed ${questions.length} questions!`, 'success');
+        
+    } catch (error) {
+        hideProcessingModal();
+        resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+        showAlert(`Error processing batch query: ${error.message}`, 'danger');
+    }
+}
+
 // Display functions
 function displayDocumentProcessed(url, result) {
     const statusDiv = document.getElementById('uploadStatus');
@@ -230,7 +308,7 @@ function displayDocumentProcessed(url, result) {
         <div class="alert alert-success">
             <h6><i class="fas fa-check-circle me-2"></i>Document Processed Successfully</h6>
             <p class="mb-2"><strong>Source:</strong> ${url}</p>
-            <p class="mb-0"><strong>Test Answer:</strong> ${result.answers[0]}</p>
+            <p class="mb-0"><strong>Test Answer:</strong> ${result.answers && result.answers[0] ? result.answers[0] : 'Processing completed'}</p>
         </div>
     `;
 }
@@ -341,50 +419,6 @@ function displayQueryResult(query, result) {
     
     resultsSection.style.display = 'block';
     resultsSection.scrollIntoView({ behavior: 'smooth' });
-}
-
-// API Testing
-async function testAPI() {
-    const documentUrl = document.getElementById('apiDocumentUrl').value.trim();
-    const questionsText = document.getElementById('apiQuestions').value.trim();
-    const responseDiv = document.getElementById('apiResponse');
-    
-    if (!documentUrl || !questionsText) {
-        showAlert('Please provide both document URL and questions', 'warning');
-        return;
-    }
-    
-    let questions;
-    try {
-        questions = JSON.parse(questionsText);
-        if (!Array.isArray(questions)) {
-            throw new Error('Questions must be an array');
-        }
-    } catch (error) {
-        showAlert('Invalid JSON format for questions', 'warning');
-        return;
-    }
-    
-    responseDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing API request...';
-    
-    try {
-        const requestData = {
-            documents: documentUrl,
-            questions: questions
-        };
-        
-        const result = await apiCall('/hackrx/run', {
-            method: 'POST',
-            body: JSON.stringify(requestData)
-        });
-        
-        responseDiv.innerHTML = JSON.stringify(result, null, 2);
-        showAlert('API test completed successfully!', 'success');
-        
-    } catch (error) {
-        responseDiv.innerHTML = `Error: ${error.message}`;
-        showAlert(`API test failed: ${error.message}`, 'danger');
-    }
 }
 
 // System status
