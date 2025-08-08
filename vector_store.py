@@ -255,11 +255,30 @@ class HybridRetriever:
         results = []
         
         for chunk in self.vector_store.chunk_metadata:
-            chunk_words = set(chunk['text'].lower().split())
+            # Handle both dict and object types
+            if hasattr(chunk, 'copy') and callable(getattr(chunk, 'copy')):
+                chunk_text = chunk['text'] if isinstance(chunk, dict) else getattr(chunk, 'text', '')
+            else:
+                chunk_text = chunk.get('text', '') if isinstance(chunk, dict) else getattr(chunk, 'text', '')
+            
+            chunk_words = set(chunk_text.lower().split())
             overlap = len(query_words & chunk_words)
             
             if overlap > 0:
-                chunk_copy = chunk.copy()
+                # Create a new dict instead of copying
+                if isinstance(chunk, dict):
+                    chunk_copy = chunk.copy()
+                else:
+                    # Convert object to dict
+                    chunk_copy = {
+                        'text': getattr(chunk, 'text', ''),
+                        'source': getattr(chunk, 'source', ''),
+                        'chunk_type': getattr(chunk, 'chunk_type', 'unknown'),
+                        'content_categories': getattr(chunk, 'content_categories', []),
+                        'vector_id': getattr(chunk, 'vector_id', 0),
+                        'similarity_score': getattr(chunk, 'similarity_score', 0.0)
+                    }
+                
                 chunk_copy['keyword_score'] = overlap / len(query_words)
                 results.append(chunk_copy)
         
@@ -278,7 +297,11 @@ class HybridRetriever:
             chunk_id = result.get('vector_id', f"sem_{i}")
             semantic_score = result.get('similarity_score', 0)
             
-            combined[chunk_id] = result.copy()
+            # Safe copy handling
+            if hasattr(result, 'copy') and callable(getattr(result, 'copy')):
+                combined[chunk_id] = result.copy()
+            else:
+                combined[chunk_id] = dict(result) if hasattr(result, '__iter__') else {}
             combined[chunk_id]['combined_score'] = semantic_score * semantic_weight
             combined[chunk_id]['semantic_score'] = semantic_score
         
@@ -292,7 +315,11 @@ class HybridRetriever:
                 combined[chunk_id]['combined_score'] += keyword_score * keyword_weight
                 combined[chunk_id]['keyword_score'] = keyword_score
             else:
-                combined[chunk_id] = result.copy()
+                # Safe copy handling
+                if hasattr(result, 'copy') and callable(getattr(result, 'copy')):
+                    combined[chunk_id] = result.copy()
+                else:
+                    combined[chunk_id] = dict(result) if hasattr(result, '__iter__') else {}
                 combined[chunk_id]['combined_score'] = keyword_score * keyword_weight
                 combined[chunk_id]['keyword_score'] = keyword_score
         
