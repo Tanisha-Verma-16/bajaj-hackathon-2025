@@ -122,18 +122,32 @@ def run_hackrx():
         processing_time = time.time() - start_time
         
         response_data = {
-            'answers': answers
+            'answers': answers,
+            'processing_time': processing_time,
+            'questions_processed': len(questions),
+            'status': 'success'
         }
         
         logging.info(f"Successfully processed {len(questions)} questions in {processing_time:.2f} seconds")
-        return jsonify(response_data)
+        
+        # Create proper response with CORS headers
+        response = jsonify(response_data)
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+        return response
         
     except Exception as e:
         logging.error(f"Error in hackrx/run endpoint: {str(e)}")
-        return jsonify({
+        error_response = jsonify({
             'error': 'Internal Server Error',
-            'message': str(e)
-        }), 500
+            'message': str(e),
+            'status': 'error'
+        })
+        error_response.headers.add('Access-Control-Allow-Origin', '*')
+        error_response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        error_response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+        return error_response, 500
 
 @api_bp.route('/upload', methods=['POST'])
 def upload_document():

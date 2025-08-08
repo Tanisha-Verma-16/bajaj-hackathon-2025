@@ -65,8 +65,9 @@
 
 /* API Response styling */
 #apiResponse {
-    background-color: #1a1a1a !important;
-    color: #00ff00;
+    background-color: #f8f9fa !important;
+    color: #198754;
+    border: 1px solid #dee2e6;
     font-family: 'Courier New', monospace;
     font-size: 0.875rem;
     white-space: pre-wrap;
@@ -183,8 +184,9 @@
 
 /* Code blocks for JSON display */
 .json-display {
-    background: var(--bs-dark);
-    color: var(--bs-light);
+    background: #f8f9fa;
+    color: #212529;
+    border: 1px solid #dee2e6;
     padding: 1rem;
     border-radius: 0.5rem;
     overflow-x: auto;
