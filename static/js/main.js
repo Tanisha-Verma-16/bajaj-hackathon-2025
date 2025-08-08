@@ -3,13 +3,16 @@
 // Global variables
 let processingModal;
 let statusModal;
-const API_BASE = '/api/v1';
-const BEARER_TOKEN = '895ac47fc43e4b5dfbd28179dd2cb7b92a47e2745926e8baad22b6a1d454f54d';
+let API_BASE = '/api/v1';
+let BEARER_TOKEN = '895ac47fc43e4b5dfbd28179dd2cb7b92a47e2745926e8baad22b6a1d454f54d'; // fallback token
 
 // Initialize page
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
     processingModal = new bootstrap.Modal(document.getElementById('processingModal'));
     statusModal = new bootstrap.Modal(document.getElementById('statusModal'));
+    
+    // Load configuration from server
+    await loadClientConfig();
     
     // Check system status on load
     checkSystemStatus();
@@ -497,6 +500,24 @@ function isValidUrl(string) {
         return true;
     } catch (_) {
         return false;
+    }
+}
+
+// Configuration loading
+async function loadClientConfig() {
+    try {
+        const response = await fetch('/api/v1/config');
+        if (response.ok) {
+            const config = await response.json();
+            BEARER_TOKEN = config.bearer_token;
+            API_BASE = config.api_base || '/api/v1';
+            console.log('Client configuration loaded successfully');
+        } else {
+            console.warn('Failed to load client configuration, using defaults');
+        }
+    } catch (error) {
+        console.warn('Error loading client configuration:', error.message);
+        showAlert('Using default configuration - some features may not work correctly', 'warning');
     }
 }
 

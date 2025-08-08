@@ -20,7 +20,7 @@ class EnhancedRAGSystem:
             # Create client with timeout configuration
             http_client = httpx.Client(timeout=30.0)
             self.mistral_client = Mistral(
-                api_key="EDCCtoTed2RK7dLQCqrEeA1hyLvi2AaZ",
+                api_key=os.environ.get("MISTRAL_API_KEY", "EDCCtoTed2RK7dLQCqrEeA1hyLvi2AaZ"),
                 client=http_client
             )
             logging.info("Mistral client initialized successfully")

@@ -16,8 +16,8 @@ api_bp = Blueprint('api', __name__)
 # Initialize RAG system
 rag_system = EnhancedRAGSystem()
 
-# Authentication token
-BEARER_TOKEN = "895ac47fc43e4b5dfbd28179dd2cb7b92a47e2745926e8baad22b6a1d454f54d"
+# Authentication token - use environment variable for deployment
+BEARER_TOKEN = os.environ.get("API_BEARER_TOKEN", "895ac47fc43e4b5dfbd28179dd2cb7b92a47e2745926e8baad22b6a1d454f54d")
 
 def authenticate_request():
     """Check if request has valid bearer token"""
@@ -349,6 +349,14 @@ def api_not_found(error):
         'error': 'Not Found',
         'message': 'API endpoint not found'
     }), 404
+
+@api_bp.route('/config', methods=['GET'])
+def get_client_config():
+    """Get client configuration including bearer token"""
+    return jsonify({
+        'bearer_token': BEARER_TOKEN,
+        'api_base': '/api/v1'
+    })
 
 @api_bp.errorhandler(405)
 def method_not_allowed(error):
