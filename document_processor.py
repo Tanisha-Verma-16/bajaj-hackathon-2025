@@ -37,7 +37,7 @@ class AdvancedDocumentProcessor:
                     'title': pdf_reader.metadata.title if pdf_reader.metadata else None,
                     'author': pdf_reader.metadata.author if pdf_reader.metadata else None,
                     'total_pages': len(pdf_reader.pages),
-                    'creation_date': pdf_reader.metadata.creation_date if pdf_reader.metadata else None
+                    'creation_date': str(pdf_reader.metadata.creation_date) if (pdf_reader.metadata and pdf_reader.metadata.creation_date) else None
                 }
 
                 # Extract text with page information
