@@ -181,6 +181,45 @@ class SimpleVectorStore:
             
         except Exception as e:
             logging.error(f"Error clearing vector store: {str(e)}")
+    
+    def _extract_keywords(self, text: str) -> List[str]:
+        """Extract keywords from text"""
+        # Simple keyword extraction
+        words = re.findall(r'\b\w+\b', text.lower())
+        # Remove common stop words
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those'}
+        keywords = [word for word in words if word not in stop_words and len(word) > 2]
+        return list(set(keywords))  # Remove duplicates
+    
+    def _calculate_similarity(self, query_keywords: List[str], chunk_keywords: List[str], chunk_text: str, query: str) -> float:
+        """Calculate similarity between query and chunk"""
+        if not query_keywords:
+            return 0.0
+        
+        # Keyword overlap score
+        overlap = len(set(query_keywords) & set(chunk_keywords))
+        keyword_score = overlap / len(query_keywords)
+        
+        # Text contains exact phrases score
+        phrase_score = 0.0
+        query_lower = query.lower()
+        text_lower = chunk_text.lower()
+        
+        # Check for exact phrase matches
+        if query_lower in text_lower:
+            phrase_score = 1.0
+        else:
+            # Check for partial phrase matches
+            query_words = query_lower.split()
+            if len(query_words) > 1:
+                for i in range(len(query_words) - 1):
+                    bigram = ' '.join(query_words[i:i+2])
+                    if bigram in text_lower:
+                        phrase_score += 0.3
+        
+        # Combine scores
+        final_score = (keyword_score * 0.6) + (min(phrase_score, 1.0) * 0.4)
+        return final_score
 
 class HybridRetriever:
     """Hybrid retrieval combining semantic search with keyword matching"""
@@ -262,42 +301,3 @@ class HybridRetriever:
         final_results.sort(key=lambda x: x['combined_score'], reverse=True)
         
         return final_results
-    
-    def _extract_keywords(self, text: str) -> List[str]:
-        """Extract keywords from text"""
-        # Simple keyword extraction
-        words = re.findall(r'\b\w+\b', text.lower())
-        # Remove common stop words
-        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those'}
-        keywords = [word for word in words if word not in stop_words and len(word) > 2]
-        return list(set(keywords))  # Remove duplicates
-    
-    def _calculate_similarity(self, query_keywords: List[str], chunk_keywords: List[str], chunk_text: str, query: str) -> float:
-        """Calculate similarity between query and chunk"""
-        if not query_keywords:
-            return 0.0
-        
-        # Keyword overlap score
-        overlap = len(set(query_keywords) & set(chunk_keywords))
-        keyword_score = overlap / len(query_keywords)
-        
-        # Text contains exact phrases score
-        phrase_score = 0.0
-        query_lower = query.lower()
-        text_lower = chunk_text.lower()
-        
-        # Check for exact phrase matches
-        if query_lower in text_lower:
-            phrase_score = 1.0
-        else:
-            # Check for partial phrase matches
-            query_words = query_lower.split()
-            if len(query_words) > 1:
-                for i in range(len(query_words) - 1):
-                    bigram = ' '.join(query_words[i:i+2])
-                    if bigram in text_lower:
-                        phrase_score += 0.3
-        
-        # Combine scores
-        final_score = (keyword_score * 0.6) + (min(phrase_score, 1.0) * 0.4)
-        return final_score
