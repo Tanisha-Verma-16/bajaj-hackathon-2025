@@ -14,8 +14,19 @@ class EnhancedRAGSystem:
     """Enhanced RAG system with multi-layer processing and comprehensive context extraction"""
     
     def __init__(self):
-        # Initialize Mistral client
-        self.mistral_client = Mistral(api_key="EDCCtoTed2RK7dLQCqrEeA1hyLvi2AaZ")
+        # Initialize Mistral client with timeout
+        try:
+            import httpx
+            # Create client with timeout configuration
+            http_client = httpx.Client(timeout=30.0)
+            self.mistral_client = Mistral(
+                api_key="EDCCtoTed2RK7dLQCqrEeA1hyLvi2AaZ",
+                client=http_client
+            )
+            logging.info("Mistral client initialized successfully")
+        except Exception as e:
+            logging.error(f"Failed to initialize Mistral client: {str(e)}")
+            self.mistral_client = None
         
         # Initialize components
         self.document_processor = AdvancedDocumentProcessor()
@@ -281,21 +292,40 @@ Context from documents:
 
 Please provide a comprehensive answer to the query based on the provided context. Include specific details like amounts, conditions, waiting periods, and any relevant limitations or exclusions."""
 
-            # Generate response using Mistral
-            response = self.mistral_client.chat.complete(
-                model="mistral-large-latest",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,  # Low temperature for factual accuracy
-                max_tokens=1000
-            )
-            
-            # Parse response
-            answer = response.choices[0].message.content
-            confidence = 0.8
-            reasoning = 'Answer generated based on document context.'
+            # Generate response using Mistral with error handling
+            try:
+                if not self.mistral_client:
+                    raise Exception("Mistral client not initialized")
+                    
+                response = self.mistral_client.chat.complete(
+                    model="mistral-large-latest",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.1,  # Low temperature for factual accuracy
+                    max_tokens=1000
+                )
+                
+                # Parse response
+                answer = response.choices[0].message.content
+                confidence = 0.8
+                reasoning = 'Answer generated based on document context.'
+                logging.info("Successfully generated answer using Mistral API")
+                
+            except Exception as api_error:
+                # Fallback to context-based answer if API fails
+                logging.error(f"Mistral API failed: {str(api_error)}")
+                
+                # Generate fallback answer based on context
+                context_snippets = [chunk['text'][:200] + '...' for chunk in context_chunks[:3]]
+                answer = f"Based on the document context, here are the relevant excerpts:\n\n"
+                for i, snippet in enumerate(context_snippets, 1):
+                    answer += f"{i}. {snippet}\n\n"
+                
+                answer += "Please note: This response is based on direct document excerpts as the AI service is temporarily unavailable."
+                confidence = 0.6
+                reasoning = f'Fallback answer due to API error: {str(api_error)}'
             
             # Try to extract JSON from response if present
             try:
