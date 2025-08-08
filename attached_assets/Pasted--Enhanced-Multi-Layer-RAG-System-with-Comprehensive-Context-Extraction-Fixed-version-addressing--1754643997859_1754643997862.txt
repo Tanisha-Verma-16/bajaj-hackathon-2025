@@ -1,0 +1,1970 @@
+# Enhanced Multi-Layer RAG System with Comprehensive Context Extraction
+# Fixed version addressing shallow retrieval, weak reasoning, and missing critical information
+
+import os
+import json
+import re
+from typing import List, Dict, Any, Tuple, Optional
+import numpy as np
+from pathlib import Path
+import pickle
+from datetime import datetime
+
+# Install required packages (run this first in Colab)
+"""
+!pip install langchain
+!pip install chromadb
+!pip install sentence-transformers
+!pip install PyPDF2
+!pip install python-docx
+!pip install mistralai
+!pip install google-colab
+!pip install spacy nltk
+!pip install langchain-text-splitters
+!pip install tiktoken
+!python -m spacy download en_core_web_sm
+!pip install nltk
+"""
+
+# Import libraries
+import PyPDF2
+import docx
+from sentence_transformers import SentenceTransformer
+import chromadb
+from chromadb.config import Settings
+import requests
+from google.colab import drive, files
+import spacy
+import nltk
+from nltk.tokenize import sent_tokenize, word_tokenize
+from langchain.text_splitter import RecursiveCharacterTextSplitter, SpacyTextSplitter
+from langchain.schema import Document
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter,
+    MarkdownHeaderTextSplitter,
+    HTMLHeaderTextSplitter
+)
+import tiktoken
+
+# Download NLTK data
+try:
+    nltk.download('punkt', quiet=True)
+    nltk.download('stopwords', quiet=True)
+    nltk.download('wordnet', quiet=True)
+except:
+    pass
+
+class AdvancedDocumentProcessor:
+    """Enhanced document processor with better structure preservation"""
+    def __init__(self):
+        self.supported_formats = ['.pdf', '.docx', '.txt', '.md', '.html']
+
+    def extract_text_from_pdf(self, pdf_path: str) -> Dict[str, Any]:
+        """Extract text with metadata and structure preservation"""
+        try:
+            with open(pdf_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+
+                # Extract metadata
+                metadata = {
+                    'title': pdf_reader.metadata.title if pdf_reader.metadata else None,
+                    'author': pdf_reader.metadata.author if pdf_reader.metadata else None,
+                    'total_pages': len(pdf_reader.pages),
+                    'creation_date': pdf_reader.metadata.creation_date if pdf_reader.metadata else None
+                }
+
+                # Extract text with page information
+                pages_text = []
+                full_text = ""
+
+                for page_num, page in enumerate(pdf_reader.pages):
+                    page_text = page.extract_text()
+                    pages_text.append({
+                        'page_number': page_num + 1,
+                        'text': page_text,
+                        'char_count': len(page_text)
+                    })
+                    full_text += f"\n--- PAGE {page_num + 1} ---\n{page_text}\n"
+
+                return {
+                    'text': full_text,
+                    'pages': pages_text,
+                    'metadata': metadata,
+                    'structure_type': 'pdf'
+                }
+        except Exception as e:
+            print(f"Error extracting PDF {pdf_path}: {str(e)}")
+            return {'text': '', 'pages': [], 'metadata': {}, 'structure_type': 'pdf'}
+
+    def extract_text_from_docx(self, docx_path: str) -> Dict[str, Any]:
+        """Extract text with document structure preservation"""
+        try:
+            doc = docx.Document(docx_path)
+
+            # Extract paragraphs with styles
+            structured_content = []
+            full_text = ""
+
+            for para in doc.paragraphs:
+                para_data = {
+                    'text': para.text,
+                    'style': para.style.name if para.style else 'Normal',
+                    'level': self._get_heading_level(para.style.name) if para.style else 0
+                }
+                structured_content.append(para_data)
+
+                # Add structure markers for headings
+                if para_data['level'] > 0:
+                    full_text += f"\n{'#' * para_data['level']} {para.text}\n"
+                else:
+                    full_text += f"{para.text}\n"
+
+            # Extract tables
+            tables_data = []
+            for table in doc.tables:
+                table_text = ""
+                for row in table.rows:
+                    row_text = " | ".join([cell.text for cell in row.cells])
+                    table_text += row_text + "\n"
+                tables_data.append(table_text)
+                full_text += f"\n--- TABLE ---\n{table_text}\n"
+
+            return {
+                'text': full_text,
+                'paragraphs': structured_content,
+                'tables': tables_data,
+                'metadata': {'total_paragraphs': len(structured_content), 'total_tables': len(tables_data)},
+                'structure_type': 'docx'
+            }
+        except Exception as e:
+            print(f"Error extracting DOCX {docx_path}: {str(e)}")
+            return {'text': '', 'paragraphs': [], 'tables': [], 'metadata': {}, 'structure_type': 'docx'}
+
+    def _get_heading_level(self, style_name: str) -> int:
+        """Determine heading level from style name"""
+        if not style_name:
+            return 0
+
+        heading_map = {
+            'Title': 1,
+            'Heading 1': 1,
+            'Heading 2': 2,
+            'Heading 3': 3,
+            'Heading 4': 4,
+            'Heading 5': 5,
+            'Heading 6': 6
+        }
+
+        return heading_map.get(style_name, 0)
+
+    def extract_text_from_txt(self, txt_path: str) -> Dict[str, Any]:
+        """Extract text with basic structure detection"""
+        try:
+            with open(txt_path, 'r', encoding='utf-8') as file:
+                text = file.read()
+
+            # Detect basic structure (markdown-like headers)
+            lines = text.split('\n')
+            structured_content = []
+
+            for line in lines:
+                if line.strip().startswith('#'):
+                    level = len(line) - len(line.lstrip('#'))
+                    structured_content.append({
+                        'text': line.strip('#').strip(),
+                        'type': 'heading',
+                        'level': min(level, 6)
+                    })
+                elif line.strip():
+                    structured_content.append({
+                        'text': line,
+                        'type': 'paragraph',
+                        'level': 0
+                    })
+
+            return {
+                'text': text,
+                'structure': structured_content,
+                'metadata': {'total_lines': len(lines)},
+                'structure_type': 'txt'
+            }
+        except Exception as e:
+            print(f"Error extracting TXT {txt_path}: {str(e)}")
+            return {'text': '', 'structure': [], 'metadata': {}, 'structure_type': 'txt'}
+
+class SmartChunkManager:
+    """Advanced chunking using LangChain with context preservation"""
+    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+
+        # Initialize different splitters for different content types
+        self.recursive_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""]
+        )
+
+        # Markdown splitter for structured documents
+        self.markdown_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=[
+                ("#", "Header 1"),
+                ("##", "Header 2"),
+                ("###", "Header 3"),
+            ]
+        )
+
+        # Token-based splitter for precise control
+        try:
+            encoding = tiktoken.get_encoding("cl100k_base")
+            self.token_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                encoding_name="cl100k_base",
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+        except:
+            self.token_splitter = self.recursive_splitter
+
+    def create_smart_chunks(self, document_data: Dict[str, Any], document_name: str) -> List[Dict[str, Any]]:
+        """Create intelligent chunks based on document structure"""
+        text = document_data['text']
+        structure_type = document_data.get('structure_type', 'unknown')
+
+        chunks = []
+
+        if structure_type == 'pdf' and 'pages' in document_data:
+            chunks = self._chunk_pdf_by_pages(document_data, document_name)
+        elif structure_type == 'docx' and 'paragraphs' in document_data:
+            chunks = self._chunk_docx_by_structure(document_data, document_name)
+        else:
+            chunks = self._chunk_generic_text(text, document_name)
+
+        # Add semantic metadata to chunks with enhanced categorization
+        enhanced_chunks = []
+        for i, chunk in enumerate(chunks):
+            enhanced_chunk = chunk.copy()
+            enhanced_chunk.update({
+                'semantic_type': self._classify_chunk_type(chunk['text']),
+                'content_categories': self._extract_content_categories(chunk['text']),
+                'has_numbers': bool(re.search(r'\d+', chunk['text'])),
+                'has_currency': bool(re.search(r'[\$\€\£\₹]|\b(?:dollar|euro|pound|rupee)s?\b', chunk['text'], re.IGNORECASE)),
+                'has_dates': bool(re.search(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b', chunk['text'], re.IGNORECASE)),
+                'has_percentages': bool(re.search(r'\d+\.?\d*\s*%', chunk['text'])),
+                'has_medical_terms': self._has_medical_terms(chunk['text']),
+                'has_legal_terms': self._has_legal_terms(chunk['text']),
+                'word_count': len(chunk['text'].split()),
+                'chunk_position': i / len(chunks),  # Relative position in document
+                'urgency_indicators': self._extract_urgency_indicators(chunk['text']),
+                'exclusion_indicators': self._extract_exclusion_indicators(chunk['text'])
+            })
+            enhanced_chunks.append(enhanced_chunk)
+
+        return enhanced_chunks
+
+    def _extract_content_categories(self, text: str) -> List[str]:
+        """Extract multiple content categories for better search"""
+        categories = []
+        text_lower = text.lower()
+
+        category_patterns = {
+            'eligibility_criteria': ['eligible', 'eligibility', 'qualify', 'qualification', 'criteria', 'requirements'],
+            'waiting_periods': ['waiting period', 'wait', 'minimum duration', 'cooling period', 'pre-existing'],
+            'coverage_limits': ['maximum', 'limit', 'cap', 'upto', 'not exceeding', 'ceiling'],
+            'deductibles': ['deductible', 'co-payment', 'copay', 'self-payment', 'excess'],
+            'geographical': ['location', 'network', 'hospital', 'city', 'state', 'region'],
+            'age_related': ['age', 'years old', 'minor', 'senior', 'adult', 'child'],
+            'emergency': ['emergency', 'urgent', 'critical', 'immediate', 'acute'],
+            'preventive': ['preventive', 'preventative', 'routine', 'screening', 'checkup'],
+            'chronic_conditions': ['chronic', 'diabetes', 'hypertension', 'cancer', 'heart disease'],
+            'maternity': ['maternity', 'pregnancy', 'childbirth', 'delivery', 'prenatal'],
+            'dental': ['dental', 'teeth', 'oral', 'orthodontic', 'periodontal'],
+            'mental_health': ['mental health', 'psychological', 'psychiatric', 'counseling', 'therapy']
+        }
+
+        for category, keywords in category_patterns.items():
+            if any(keyword in text_lower for keyword in keywords):
+                categories.append(category)
+
+        return categories
+
+    def _has_medical_terms(self, text: str) -> bool:
+        """Check if text contains medical terminology"""
+        medical_terms = [
+            'surgery', 'procedure', 'treatment', 'diagnosis', 'medication', 'therapy',
+            'hospital', 'clinic', 'doctor', 'physician', 'specialist', 'consultation',
+            'disease', 'condition', 'symptom', 'patient', 'medical', 'clinical'
+        ]
+        text_lower = text.lower()
+        return any(term in text_lower for term in medical_terms)
+
+    def _has_legal_terms(self, text: str) -> bool:
+        """Check if text contains legal terminology"""
+        legal_terms = [
+            'clause', 'section', 'subsection', 'article', 'terms', 'conditions',
+            'shall', 'hereby', 'whereas', 'pursuant', 'notwithstanding',
+            'liability', 'obligation', 'right', 'duty', 'breach', 'violation'
+        ]
+        text_lower = text.lower()
+        return any(term in text_lower for term in legal_terms)
+
+    def _extract_urgency_indicators(self, text: str) -> List[str]:
+        """Extract urgency and priority indicators"""
+        urgency_patterns = {
+            'emergency': r'\b(?:emergency|urgent|critical|immediate|acute|life-threatening)\b',
+            'time_sensitive': r'\b(?:within \d+ (?:hours?|days?)|immediate|asap|urgent|priority)\b',
+            'severity': r'\b(?:severe|critical|major|serious|significant)\b'
+        }
+
+        indicators = []
+        for category, pattern in urgency_patterns.items():
+            if re.search(pattern, text, re.IGNORECASE):
+                indicators.append(category)
+
+        return indicators
+
+    def _extract_exclusion_indicators(self, text: str) -> List[str]:
+        """Extract exclusion and limitation indicators"""
+        exclusion_patterns = {
+            'explicit_exclusion': r'\b(?:excluded|not covered|exception|limitation|restriction)\b',
+            'conditional': r'\b(?:subject to|provided that|unless|except|however|but)\b',
+            'temporal': r'\b(?:after|before|within|during|following|preceding)\b',
+            'monetary': r'\b(?:excess|deductible|co-payment|maximum|minimum|limit)\b'
+        }
+
+        indicators = []
+        for category, pattern in exclusion_patterns.items():
+            if re.search(pattern, text, re.IGNORECASE):
+                indicators.append(category)
+
+        return indicators
+
+    def _chunk_pdf_by_pages(self, document_data: Dict[str, Any], document_name: str) -> List[Dict[str, Any]]:
+        """Chunk PDF considering page boundaries"""
+        chunks = []
+        chunk_id = 0
+
+        for page_data in document_data['pages']:
+            page_text = page_data['text']
+            page_num = page_data['page_number']
+
+            if len(page_text.split()) < 50:  # Short page, keep as single chunk
+                chunks.append({
+                    'chunk_id': f"{document_name}_page_{page_num}_chunk_{chunk_id}",
+                    'text': page_text,
+                    'document': document_name,
+                    'page_number': page_num,
+                    'chunk_index': chunk_id,
+                    'chunk_type': 'page_based'
+                })
+                chunk_id += 1
+            else:
+                # Split long pages using recursive splitter
+                page_chunks = self.recursive_splitter.split_text(page_text)
+                for j, chunk_text in enumerate(page_chunks):
+                    chunks.append({
+                        'chunk_id': f"{document_name}_page_{page_num}_chunk_{chunk_id}",
+                        'text': chunk_text,
+                        'document': document_name,
+                        'page_number': page_num,
+                        'chunk_index': chunk_id,
+                        'chunk_type': 'page_based',
+                        'sub_chunk': j
+                    })
+                    chunk_id += 1
+
+        return chunks
+
+    def _chunk_docx_by_structure(self, document_data: Dict[str, Any], document_name: str) -> List[Dict[str, Any]]:
+        """Chunk DOCX considering document structure"""
+        chunks = []
+        chunk_id = 0
+        current_section = ""
+        current_heading = ""
+
+        # Process paragraphs with structure awareness
+        for para_data in document_data['paragraphs']:
+            if para_data['level'] > 0:  # This is a heading
+                # Save previous section if it exists
+                if current_section.strip():
+                    section_chunks = self.recursive_splitter.split_text(current_section)
+                    for i, chunk_text in enumerate(section_chunks):
+                        chunks.append({
+                            'chunk_id': f"{document_name}_section_{chunk_id}",
+                            'text': f"Section: {current_heading}\n\n{chunk_text}",
+                            'document': document_name,
+                            'chunk_index': chunk_id,
+                            'chunk_type': 'section_based',
+                            'heading': current_heading,
+                            'heading_level': para_data['level']
+                        })
+                        chunk_id += 1
+
+                # Start new section
+                current_heading = para_data['text']
+                current_section = ""
+            else:
+                current_section += para_data['text'] + "\n"
+
+        # Process remaining section
+        if current_section.strip():
+            section_chunks = self.recursive_splitter.split_text(current_section)
+            for i, chunk_text in enumerate(section_chunks):
+                chunks.append({
+                    'chunk_id': f"{document_name}_section_{chunk_id}",
+                    'text': f"Section: {current_heading}\n\n{chunk_text}",
+                    'document': document_name,
+                    'chunk_index': chunk_id,
+                    'chunk_type': 'section_based',
+                    'heading': current_heading
+                })
+                chunk_id += 1
+
+        # Process tables separately
+        for i, table_text in enumerate(document_data.get('tables', [])):
+            chunks.append({
+                'chunk_id': f"{document_name}_table_{i}",
+                'text': f"Table {i+1}:\n{table_text}",
+                'document': document_name,
+                'chunk_index': chunk_id,
+                'chunk_type': 'table',
+                'table_number': i + 1
+            })
+            chunk_id += 1
+
+        return chunks
+
+    def _chunk_generic_text(self, text: str, document_name: str) -> List[Dict[str, Any]]:
+        """Generic text chunking with multiple strategies"""
+        # Try markdown splitting first if document has markdown structure
+        if re.search(r'^#{1,6}\s', text, re.MULTILINE):
+            try:
+                markdown_docs = self.markdown_splitter.split_text(text)
+                chunks = []
+                for i, doc in enumerate(markdown_docs):
+                    # Further split if chunks are too large
+                    if len(doc) > self.chunk_size:
+                        sub_chunks = self.recursive_splitter.split_text(doc)
+                        for j, sub_chunk in enumerate(sub_chunks):
+                            chunks.append({
+                                'chunk_id': f"{document_name}_md_chunk_{i}_{j}",
+                                'text': sub_chunk,
+                                'document': document_name,
+                                'chunk_index': i * 100 + j,
+                                'chunk_type': 'markdown_based'
+                            })
+                    else:
+                        chunks.append({
+                            'chunk_id': f"{document_name}_md_chunk_{i}",
+                            'text': doc,
+                            'document': document_name,
+                            'chunk_index': i,
+                            'chunk_type': 'markdown_based'
+                        })
+                return chunks
+            except:
+                pass
+
+        # Fall back to token-based splitting
+        chunk_texts = self.token_splitter.split_text(text)
+        chunks = []
+        for i, chunk_text in enumerate(chunk_texts):
+            chunks.append({
+                'chunk_id': f"{document_name}_chunk_{i}",
+                'text': chunk_text,
+                'document': document_name,
+                'chunk_index': i,
+                'chunk_type': 'token_based'
+            })
+
+        return chunks
+
+    def _classify_chunk_type(self, text: str) -> str:
+        """Classify chunk content type for better retrieval"""
+        text_lower = text.lower()
+
+        # More granular classification
+        if any(word in text_lower for word in ['table', 'column', 'row', '|']):
+            return 'table'
+        elif any(word in text_lower for word in ['eligibility', 'eligible', 'qualify', 'criteria']):
+            return 'eligibility_criteria'
+        elif any(word in text_lower for word in ['waiting period', 'cooling period', 'minimum duration']):
+            return 'waiting_periods'
+        elif any(word in text_lower for word in ['excluded', 'not covered', 'exception', 'limitation']):
+            return 'exclusions'
+        elif any(word in text_lower for word in ['deductible', 'co-payment', 'excess', 'copay']):
+            return 'financial_terms'
+        elif any(word in text_lower for word in ['coverage', 'benefit', 'policy', 'insurance']):
+            return 'policy_terms'
+        elif any(word in text_lower for word in ['claim', 'procedure', 'process', 'steps']):
+            return 'procedures'
+        elif any(word in text_lower for word in ['network', 'hospital', 'provider', 'facility']):
+            return 'network_providers'
+        else:
+            return 'general'
+
+class RobustQueryProcessor:
+    """Enhanced query processor using spaCy NER and NLTK"""
+    def __init__(self):
+        # Load spaCy model
+        try:
+            self.nlp = spacy.load("en_core_web_sm")
+        except OSError:
+            print("spaCy model not found. Installing...")
+            os.system("python -m spacy download en_core_web_sm")
+            self.nlp = spacy.load("en_core_web_sm")
+
+        # Download required NLTK data
+        try:
+            nltk.download('punkt', quiet=True)
+            nltk.download('stopwords', quiet=True)
+            nltk.download('averaged_perceptron_tagger', quiet=True)
+        except:
+            pass
+
+        # Enhanced patterns for comprehensive extraction
+        self.custom_patterns = {
+            'age_patterns': [
+                r'(\d{1,3})[-\s]?(?:year|yr|y)[-\s]?old',
+                r'(\d{1,3})\s*(?:M|F|male|female)',
+                r'age\s*:?\s*(\d{1,3})',
+                r'(\d{1,3})\s*years?\s*of\s*age'
+            ],
+            'medical_procedures': [
+                'surgery', 'operation', 'procedure', 'treatment', 'therapy',
+                'knee surgery', 'hip replacement', 'heart surgery', 'cataract surgery',
+                'dental treatment', 'root canal', 'bypass', 'angioplasty',
+                'chemotherapy', 'radiation', 'dialysis', 'transplant',
+                'consultation', 'diagnostic', 'screening', 'checkup'
+            ],
+            'policy_terms': [
+                r'(\d+)[-\s]?(month|year|day|week)s?[-\s]?old\s+(?:policy|insurance|coverage)',
+                r'policy\s+(?:purchased|bought|taken)\s+(\d+)\s+(months?|years?)\s+ago',
+                r'(\d+)[-\s]?(month|year)\s+policy'
+            ],
+            'monetary_patterns': [
+                r'(?:₹|Rs\.?|INR)\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)',
+                r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*(?:rupees?|₹|Rs\.?)',
+                r'\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)',
+                r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*(?:dollars?|\$)'
+            ],
+            'urgency_patterns': [
+                r'\b(?:emergency|urgent|critical|immediate|acute|life-threatening)\b',
+                r'\b(?:emergency room|ER|ICU|intensive care)\b'
+            ],
+            'pre_existing_patterns': [
+                r'\b(?:pre-existing|existing condition|chronic|diabetes|hypertension|heart disease)\b',
+                r'\b(?:diabetic|diabetic patient|cardiac|heart patient)\b'
+            ]
+        }
+
+    def structure_query_enhanced(self, query: str) -> Dict[str, Any]:
+        """Enhanced query structuring with comprehensive entity extraction - FIXED"""
+
+        # Extract entities using both spaCy and custom patterns
+        spacy_entities = self.extract_entities_with_spacy(query)
+        custom_entities = self.extract_custom_entities(query)
+
+        # Merge entities
+        all_entities = {}
+        all_entities.update(spacy_entities)
+        all_entities.update(custom_entities)
+
+        # Classify query intent
+        intent = self.classify_query_intent(query)
+
+        # Calculate overall confidence based on entity extraction and intent classification
+        entity_confidence = len(all_entities) / 8.0  # Normalize by max expected entities
+        intent_confidence = intent.get('confidence', 0.5)
+        overall_confidence = (entity_confidence + intent_confidence) / 2
+
+        return {
+            'original_query': query,
+            'intent': intent,
+            'spacy_entities': spacy_entities,
+            'custom_entities': custom_entities,
+            'all_entities': all_entities,
+            'confidence': min(overall_confidence, 1.0),  # Cap at 1.0
+            'entity_count': len(all_entities),
+            'complexity_score': self._calculate_complexity_score(query, all_entities, intent)
+        }
+
+    def _calculate_complexity_score(self, query: str, entities: Dict[str, Any], intent: Dict[str, Any]) -> float:
+        """Calculate query complexity score"""
+        base_score = len(query.split()) / 20.0  # Based on query length
+        entity_score = len(entities) / 10.0  # Based on number of entities
+        intent_score = intent.get('query_complexity', 1) / 5.0  # Based on intent complexity
+
+        return min((base_score + entity_score + intent_score) / 3, 1.0)
+
+    def extract_entities_with_spacy(self, query: str) -> Dict[str, Any]:
+        """Extract entities using spaCy NER"""
+        doc = self.nlp(query)
+        entities = {}
+
+        # Extract named entities
+        spacy_entities = {}
+        for ent in doc.ents:
+            entity_type = ent.label_
+            entity_text = ent.text
+
+            if entity_type not in spacy_entities:
+                spacy_entities[entity_type] = []
+            spacy_entities[entity_type].append({
+                'text': entity_text,
+                'start': ent.start_char,
+                'end': ent.end_char,
+                'confidence': 1.0
+            })
+
+        # Map spaCy entities to our domain
+        if 'PERSON' in spacy_entities:
+            entities['person'] = spacy_entities['PERSON']
+
+        if 'GPE' in spacy_entities:
+            entities['location'] = spacy_entities['GPE']
+
+        if 'MONEY' in spacy_entities:
+            entities['money'] = spacy_entities['MONEY']
+
+        if 'DATE' in spacy_entities:
+            entities['dates'] = spacy_entities['DATE']
+
+        if 'CARDINAL' in spacy_entities:
+            entities['numbers'] = spacy_entities['CARDINAL']
+
+        return entities
+
+    def extract_custom_entities(self, query: str) -> Dict[str, Any]:
+        """Extract domain-specific entities using enhanced custom patterns"""
+        entities = {}
+
+        # Extract age with enhanced patterns
+        for pattern in self.custom_patterns['age_patterns']:
+            matches = re.finditer(pattern, query, re.IGNORECASE)
+            for match in matches:
+                age_value = int(match.group(1))
+                if 'age' not in entities:
+                    entities['age'] = []
+                entities['age'].append({
+                    'value': age_value,
+                    'text': match.group(0),
+                    'start': match.start(),
+                    'end': match.end(),
+                    'age_category': self._categorize_age(age_value)
+                })
+
+        # Extract gender with better patterns
+        gender_pattern = r'\b(?:(\d+)\s*([MF])|(?:male|female|man|woman))\b'
+        gender_matches = re.finditer(gender_pattern, query, re.IGNORECASE)
+        for match in gender_matches:
+            if match.group(2):
+                gender = 'male' if match.group(2).upper() == 'M' else 'female'
+            else:
+                gender_text = match.group(0).lower()
+                gender = 'male' if gender_text in ['male', 'man'] else 'female'
+
+            if 'gender' not in entities:
+                entities['gender'] = []
+            entities['gender'].append({
+                'value': gender,
+                'text': match.group(0),
+                'start': match.start(),
+                'end': match.end()
+            })
+
+        # Extract medical procedures with categories
+        for procedure in self.custom_patterns['medical_procedures']:
+            pattern = r'\b' + re.escape(procedure) + r'\b'
+            matches = re.finditer(pattern, query, re.IGNORECASE)
+            for match in matches:
+                if 'medical_procedure' not in entities:
+                    entities['medical_procedure'] = []
+                entities['medical_procedure'].append({
+                    'value': procedure,
+                    'text': match.group(0),
+                    'start': match.start(),
+                    'end': match.end(),
+                    'category': self._categorize_procedure(procedure)
+                })
+
+        # Extract urgency indicators
+        for pattern in self.custom_patterns['urgency_patterns']:
+            matches = re.finditer(pattern, query, re.IGNORECASE)
+            for match in matches:
+                if 'urgency' not in entities:
+                    entities['urgency'] = []
+                entities['urgency'].append({
+                    'text': match.group(0),
+                    'start': match.start(),
+                    'end': match.end(),
+                    'level': self._determine_urgency_level(match.group(0))
+                })
+
+        # Extract pre-existing condition indicators
+        for pattern in self.custom_patterns['pre_existing_patterns']:
+            matches = re.finditer(pattern, query, re.IGNORECASE)
+            for match in matches:
+                if 'pre_existing' not in entities:
+                    entities['pre_existing'] = []
+                entities['pre_existing'].append({
+                    'text': match.group(0),
+                    'start': match.start(),
+                    'end': match.end()
+                })
+
+        # Extract policy duration with enhanced analysis
+        for pattern in self.custom_patterns['policy_terms']:
+            matches = re.finditer(pattern, query, re.IGNORECASE)
+            for match in matches:
+                if 'policy_duration' not in entities:
+                    entities['policy_duration'] = []
+
+                # Extract numeric values and time units
+                duration_text = match.group(0)
+                numeric_match = re.search(r'(\d+)', duration_text)
+                unit_match = re.search(r'(month|year|day|week)', duration_text, re.IGNORECASE)
+
+                duration_info = {
+                    'text': duration_text,
+                    'start': match.start(),
+                    'end': match.end()
+                }
+
+                if numeric_match and unit_match:
+                    value = int(numeric_match.group(1))
+                    unit = unit_match.group(1).lower()
+
+                    # Convert to standardized months for comparison
+                    months_equivalent = self._convert_to_months(value, unit)
+                    duration_info.update({
+                        'value': value,
+                        'unit': unit,
+                        'months_equivalent': months_equivalent,
+                        'category': self._categorize_duration(months_equivalent)
+                    })
+
+                entities['policy_duration'].append(duration_info)
+
+        # Extract monetary amounts with enhanced categorization
+        for pattern in self.custom_patterns['monetary_patterns']:
+            matches = re.finditer(pattern, query, re.IGNORECASE)
+            for match in matches:
+                if 'monetary_amount' not in entities:
+                    entities['monetary_amount'] = []
+
+                amount_text = match.group(0)
+                # Extract numeric value
+                numeric_match = re.search(r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', amount_text)
+                if numeric_match:
+                    amount_value = float(numeric_match.group(1).replace(',', ''))
+                    entities['monetary_amount'].append({
+                        'text': amount_text,
+                        'value': amount_value,
+                        'start': match.start(),
+                        'end': match.end(),
+                        'category': self._categorize_amount(amount_value),
+                        'currency': self._extract_currency(amount_text)
+                    })
+
+        return entities
+
+    def _categorize_age(self, age: int) -> str:
+        """Categorize age for insurance purposes"""
+        if age < 18:
+            return 'minor'
+        elif age < 30:
+            return 'young_adult'
+        elif age < 45:
+            return 'adult'
+        elif age < 60:
+            return 'middle_aged'
+        else:
+            return 'senior'
+
+    def _categorize_procedure(self, procedure: str) -> str:
+        """Categorize medical procedures"""
+        procedure_lower = procedure.lower()
+
+        if any(word in procedure_lower for word in ['surgery', 'operation']):
+            return 'surgical'
+        elif any(word in procedure_lower for word in ['consultation', 'checkup', 'screening']):
+            return 'diagnostic'
+        elif any(word in procedure_lower for word in ['therapy', 'treatment']):
+            return 'therapeutic'
+        elif any(word in procedure_lower for word in ['dental', 'teeth', 'root canal']):
+            return 'dental'
+        elif any(word in procedure_lower for word in ['emergency', 'urgent', 'critical']):
+            return 'emergency'
+        else:
+            return 'general'
+
+    def _determine_urgency_level(self, urgency_text: str) -> str:
+        """Determine urgency level"""
+        text_lower = urgency_text.lower()
+
+        if any(word in text_lower for word in ['life-threatening', 'critical', 'icu']):
+            return 'critical'
+        elif any(word in text_lower for word in ['emergency', 'urgent', 'acute']):
+            return 'high'
+        elif any(word in text_lower for word in ['immediate']):
+            return 'medium'
+        else:
+            return 'low'
+
+    def _convert_to_months(self, value: int, unit: str) -> int:
+        """Convert duration to months for standardized comparison"""
+        conversion_map = {
+            'day': value / 30,
+            'week': value / 4,
+            'month': value,
+            'year': value * 12
+        }
+        return int(conversion_map.get(unit, value))
+
+    def _categorize_duration(self, months: int) -> str:
+        """Categorize policy duration"""
+        if months < 3:
+            return 'very_new'
+        elif months < 12:
+            return 'new'
+        elif months < 24:
+            return 'established'
+        else:
+            return 'mature'
+
+    def _categorize_amount(self, amount: float) -> str:
+        """Categorize monetary amounts"""
+        if amount < 10000:
+            return 'low'
+        elif amount < 50000:
+            return 'medium'
+        elif amount < 200000:
+            return 'high'
+        else:
+            return 'very_high'
+
+    def _extract_currency(self, amount_text: str) -> str:
+        """Extract currency type"""
+        if '₹' in amount_text or 'rs' in amount_text.lower() or 'inr' in amount_text.lower():
+            return 'INR'
+        elif '$' in amount_text or 'dollar' in amount_text.lower():
+            return 'USD'
+        else:
+            return 'unknown'
+
+    def classify_query_intent(self, query: str) -> Dict[str, Any]:
+        """Enhanced query intent classification"""
+        doc = self.nlp(query)
+        query_lower = query.lower()
+
+        # Enhanced intent patterns with more granular classification
+        intent_patterns = {
+            'coverage_eligibility': [
+                'cover', 'covered', 'coverage', 'eligible', 'eligibility', 'include', 'included',
+                'qualify', 'qualification', 'entitled', 'benefits'
+            ],
+            'claim_amount': [
+                'claim amount', 'payout', 'reimbursement', 'compensation', 'settlement',
+                'how much', 'amount', 'pay', 'receive', 'get back'
+            ],
+            'approval_probability': [
+                'approve', 'approved', 'approval', 'accept', 'accepted', 'reject', 'rejected',
+                'chances', 'likelihood', 'probability', 'will be', 'get approved'
+            ],
+            'policy_terms': [
+                'policy', 'terms', 'conditions', 'rules', 'regulations', 'guidelines',
+                'document', 'contract', 'agreement'
+            ],
+            'exclusion_check': [
+                'exclude', 'excluded', 'exclusion', 'not covered', 'limitation', 'restrict',
+                'exception', 'not include', 'barred', 'prohibited'
+            ],
+            'waiting_period': [
+                'waiting period', 'wait', 'minimum duration', 'cooling period', 'time',
+                'when can', 'how long', 'duration'
+            ],
+            'network_provider': [
+                'network', 'hospital', 'provider', 'facility', 'doctor', 'clinic',
+                'where', 'location', 'availability'
+            ],
+            'emergency_coverage': [
+                'emergency', 'urgent', 'critical', 'immediate', 'acute', 'crisis',
+                'life-threatening', 'urgent care'
+            ]
+        }
+
+        intent_scores = {}
+        for intent, keywords in intent_patterns.items():
+            score = 0
+            found_keywords = []
+
+            for keyword in keywords:
+                if keyword in query_lower:
+                    score += 1
+                    found_keywords.append(keyword)
+
+            # Add weight for exact phrase matches
+            phrase_bonus = 0
+            for keyword in keywords:
+                if len(keyword.split()) > 1 and keyword in query_lower:
+                    phrase_bonus += 0.5
+
+            intent_scores[intent] = {
+                'score': score + phrase_bonus,
+                'confidence': (score + phrase_bonus) / len(keywords),
+                'matched_keywords': found_keywords
+            }
+
+        # Determine primary and secondary intents
+        sorted_intents = sorted(intent_scores.keys(), key=lambda x: intent_scores[x]['score'], reverse=True)
+        primary_intent = sorted_intents[0] if sorted_intents else 'general_inquiry'
+
+        # Check for multiple intents
+        secondary_intents = [
+            intent for intent in sorted_intents[1:3]
+            if intent_scores[intent]['score'] > 0
+        ]
+
+        return {
+            'primary_intent': primary_intent,
+            'secondary_intents': secondary_intents,
+            'confidence': intent_scores[primary_intent]['confidence'],
+            'all_intents': intent_scores,
+            'matched_keywords': intent_scores[primary_intent]['matched_keywords'],
+            'query_complexity': len(secondary_intents) + 1
+        }
+
+class MultiLayerVectorStore:
+    """Enhanced vector store with 7 different context extraction layers"""
+    def __init__(self, collection_name: str = "multilayer_document_store"):
+        # Initialize sentence transformer for embeddings
+        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+
+        # Initialize ChromaDB
+        self.client = chromadb.PersistentClient(path="./chroma_db_multilayer")
+        self.collection = self.client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"}
+        )
+
+    def add_chunks_enhanced(self, chunks: List[Dict[str, Any]]):
+        """Add document chunks with comprehensive metadata"""
+        texts = [chunk['text'] for chunk in chunks]
+        ids = [chunk['chunk_id'] for chunk in chunks]
+
+        # Generate embeddings
+        print(f"Generating embeddings for {len(texts)} chunks...")
+        embeddings = self.embedder.encode(texts, show_progress_bar=True).tolist()
+
+        # Prepare enhanced metadata
+        metadatas = []
+        for chunk in chunks:
+            metadata = {
+                'document': chunk['document'],
+                'chunk_index': chunk['chunk_index'],
+                'chunk_type': chunk.get('chunk_type', 'unknown'),
+                'semantic_type': chunk.get('semantic_type', 'general'),
+                'content_categories': ','.join(chunk.get('content_categories', [])),
+                'has_numbers': chunk.get('has_numbers', False),
+                'has_currency': chunk.get('has_currency', False),
+                'has_dates': chunk.get('has_dates', False),
+                'has_percentages': chunk.get('has_percentages', False),
+                'has_medical_terms': chunk.get('has_medical_terms', False),
+                'has_legal_terms': chunk.get('has_legal_terms', False),
+                'word_count': chunk.get('word_count', 0),
+                'chunk_position': chunk.get('chunk_position', 0.0),
+                'urgency_indicators': ','.join(chunk.get('urgency_indicators', [])),
+                'exclusion_indicators': ','.join(chunk.get('exclusion_indicators', []))
+            }
+
+            # Add specific metadata based on chunk type
+            if 'page_number' in chunk:
+                metadata['page_number'] = chunk['page_number']
+            if 'heading' in chunk:
+                metadata['heading'] = chunk['heading']
+            if 'table_number' in chunk:
+                metadata['table_number'] = chunk['table_number']
+
+            metadatas.append(metadata)
+
+        # Add to ChromaDB in batches
+        batch_size = 1000
+        for i in range(0, len(texts), batch_size):
+            end_idx = min(i + batch_size, len(texts))
+
+            self.collection.add(
+                embeddings=embeddings[i:end_idx],
+                documents=texts[i:end_idx],
+                ids=ids[i:end_idx],
+                metadatas=metadatas[i:end_idx]
+            )
+            print(f"Added batch {i//batch_size + 1}: {end_idx - i} chunks")
+
+        print(f"Successfully added {len(chunks)} chunks to multilayer vector store")
+
+    def multi_layer_context_extraction(self, query: str, query_entities: Dict[str, Any],
+                                     n_results_per_layer: int = 3) -> Dict[str, List[Dict[str, Any]]]:
+        """Extract context using 7 different specialized layers"""
+
+        print("🔍 Extracting context using 7 specialized layers...")
+        context_layers = {}
+
+        # Layer 1: Procedure-Specific Search
+        if 'medical_procedure' in query_entities and query_entities['medical_procedure']:
+            procedures = [proc['value'] for proc in query_entities['medical_procedure']]
+            procedure_query = f"medical procedure {' '.join(procedures)} coverage treatment"
+
+            context_layers['procedure_specific'] = self._search_with_filters(
+                procedure_query,
+                filters={'has_medical_terms': True},
+                n_results=n_results_per_layer,
+                layer_name="Procedure-Specific"
+            )
+
+        # Layer 2: Age/Demographic-Specific Policy Search
+        demographic_query = query
+        demographic_filters = {}
+        if 'age' in query_entities and query_entities['age']:
+            age_category = query_entities['age'][0].get('age_category', '')
+            demographic_query += f" {age_category} age eligibility criteria"
+            demographic_filters['content_categories'] = {'$like': '%age_related%'}
+
+        context_layers['demographic_specific'] = self._search_with_filters(
+            demographic_query,
+            filters=demographic_filters,
+            n_results=n_results_per_layer,
+            layer_name="Demographic-Specific"
+        )
+
+        # Layer 3: Exclusions and Limitations Search
+        exclusion_query = f"{query} exclusion limitation restriction not covered exception"
+        context_layers['exclusions_limitations'] = self._search_with_filters(
+            exclusion_query,
+            filters={'semantic_type': {'$in': ['exclusions', 'limitations']}},
+            n_results=n_results_per_layer,
+            layer_name="Exclusions & Limitations"
+        )
+
+        # Layer 4: Financial Terms and Coverage Limits
+        financial_query = f"{query} amount limit deductible copayment coverage financial"
+        context_layers['financial_terms'] = self._search_with_filters(
+            financial_query,
+            filters={'has_currency': True},
+            n_results=n_results_per_layer,
+            layer_name="Financial Terms"
+        )
+
+        # Layer 5: Waiting Periods and Timeline Requirements
+        timeline_query = f"{query} waiting period duration time requirement eligibility"
+        context_layers['waiting_periods'] = self._search_with_filters(
+            timeline_query,
+            filters={'content_categories': {'$like': '%waiting_periods%'}},
+            n_results=n_results_per_layer,
+            layer_name="Waiting Periods"
+        )
+
+        # Layer 6: Geographical Coverage and Network Providers
+        if 'location' in query_entities and query_entities['location']:
+            locations = [loc['text'] for loc in query_entities['location']]
+            geo_query = f"{query} {' '.join(locations)} network hospital provider geographical coverage"
+        else:
+            geo_query = f"{query} network provider hospital geographical coverage location"
+
+        context_layers['geographical_network'] = self._search_with_filters(
+            geo_query,
+            filters={'content_categories': {'$like': '%geographical%'}},
+            n_results=n_results_per_layer,
+            layer_name="Geographical & Network"
+        )
+
+        # Layer 7: Emergency and Urgency-Specific Coverage
+        if 'urgency' in query_entities and query_entities['urgency']:
+            urgency_level = query_entities['urgency'][0].get('level', 'medium')
+            emergency_query = f"{query} emergency urgent critical immediate {urgency_level} priority"
+        else:
+            emergency_query = f"{query} emergency coverage urgent care critical immediate"
+
+        context_layers['emergency_coverage'] = self._search_with_filters(
+            emergency_query,
+            filters={'content_categories': {'$like': '%emergency%'}},
+            n_results=n_results_per_layer,
+            layer_name="Emergency Coverage"
+        )
+
+        # Calculate layer quality scores
+        for layer_name, results in context_layers.items():
+            if results:
+                avg_score = sum(r.get('similarity_score', 0) for r in results) / len(results)
+                print(f"  ✅ {layer_name}: {len(results)} chunks (avg score: {avg_score:.3f})")
+            else:
+                print(f"  ⚠️ {layer_name}: No results found")
+
+        return context_layers
+
+    def _search_with_filters(self, query: str, filters: Dict[str, Any],
+                           n_results: int, layer_name: str) -> List[Dict[str, Any]]:
+        """Search with specific filters for each layer"""
+        try:
+            query_embedding = self.embedder.encode([query]).tolist()
+
+            # Try filtered search first
+            if filters:
+                try:
+                    results = self.collection.query(
+                        query_embeddings=query_embedding,
+                        n_results=n_results,
+                        include=['documents', 'metadatas', 'distances'],
+                        where=filters
+                    )
+                    if results['documents'][0]:
+                        return self._format_results(results, layer_name)
+                except Exception as e:
+                    print(f"    Filtered search failed for {layer_name}: {e}")
+
+            # Fallback to basic semantic search
+            results = self.collection.query(
+                query_embeddings=query_embedding,
+                n_results=n_results,
+                include=['documents', 'metadatas', 'distances']
+            )
+            return self._format_results(results, f"{layer_name}_fallback")
+
+        except Exception as e:
+            print(f"    Search failed for {layer_name}: {e}")
+            return []
+
+    def _format_results(self, results, layer_name: str) -> List[Dict[str, Any]]:
+        """Format ChromaDB results into standard format"""
+        formatted_results = []
+
+        if not results['documents'][0]:
+            return formatted_results
+
+        for i in range(len(results['documents'][0])):
+            result = {
+                'text': results['documents'][0][i],
+                'metadata': results['metadatas'][0][i],
+                'similarity_score': 1 - results['distances'][0][i],
+                'chunk_id': results['ids'][0][i] if 'ids' in results else f"result_{i}",
+                'search_layer': layer_name,
+                'relevance_boost': 0.0
+            }
+            formatted_results.append(result)
+
+        return formatted_results
+
+    def assess_context_completeness(self, context_layers: Dict[str, List[Dict[str, Any]]],
+                                  query_entities: Dict[str, Any]) -> Dict[str, Any]:
+        """Assess the completeness of extracted context"""
+
+        completeness_metrics = {
+            'total_chunks_retrieved': sum(len(results) for results in context_layers.values()),
+            'layers_with_results': len([layer for layer, results in context_layers.items() if results]),
+            'total_layers': len(context_layers),
+            'layer_coverage': {},
+            'information_gaps': [],
+            'completeness_score': 0.0
+        }
+
+        # Assess each layer
+        required_info = {
+            'procedure_coverage': 'procedure_specific',
+            'demographic_eligibility': 'demographic_specific',
+            'exclusions_check': 'exclusions_limitations',
+            'financial_terms': 'financial_terms',
+            'waiting_periods': 'waiting_periods',
+            'network_coverage': 'geographical_network',
+            'emergency_provisions': 'emergency_coverage'
+        }
+
+        for info_type, layer_name in required_info.items():
+            if layer_name in context_layers and context_layers[layer_name]:
+                completeness_metrics['layer_coverage'][info_type] = {
+                    'found': True,
+                    'chunk_count': len(context_layers[layer_name]),
+                    'avg_relevance': sum(r.get('similarity_score', 0) for r in context_layers[layer_name]) / len(context_layers[layer_name])
+                }
+            else:
+                completeness_metrics['layer_coverage'][info_type] = {
+                    'found': False,
+                    'chunk_count': 0,
+                    'avg_relevance': 0.0
+                }
+                completeness_metrics['information_gaps'].append(info_type)
+
+        # Calculate completeness score
+        found_layers = sum(1 for info in completeness_metrics['layer_coverage'].values() if info['found'])
+        completeness_metrics['completeness_score'] = found_layers / len(required_info)
+
+        # Entity-specific completeness
+        entity_coverage = {}
+        if 'age' in query_entities:
+            entity_coverage['age_requirements'] = any(
+                'age' in chunk['text'].lower() or 'eligibility' in chunk['text'].lower()
+                for results in context_layers.values() for chunk in results
+            )
+
+        if 'medical_procedure' in query_entities:
+            procedures = [proc['value'].lower() for proc in query_entities['medical_procedure']]
+            entity_coverage['procedure_coverage'] = any(
+                any(proc in chunk['text'].lower() for proc in procedures)
+                for results in context_layers.values() for chunk in results
+            )
+
+        completeness_metrics['entity_coverage'] = entity_coverage
+
+        return completeness_metrics
+
+class ExpertLLMAnalyzer:
+    """Enhanced LLM with 20+ year expert persona and comprehensive analysis framework"""
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://api.mistral.ai/v1"
+        self.model = "mistral-medium"
+
+    def comprehensive_analysis(self, context_layers: Dict[str, List[Dict[str, Any]]],
+                             completeness_metrics: Dict[str, Any],
+                             query: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate comprehensive analysis with expert 6-step framework"""
+
+        # Build comprehensive system prompt with 20+ year expert persona
+        system_prompt = """You are Dr. Sarah Mitchell, a Senior Insurance Policy Analyst with 23 years of experience in health insurance claim processing and policy interpretation. You hold certifications in:
+
+- Certified Insurance Counselor (CIC)
+- Associate in Claims (AIC)
+- Chartered Property Casualty Underwriter (CPCU)
+- Medical Claims Processing Specialist
+
+EXPERTISE AREAS:
+✓ Complex policy interpretation and clause analysis
+✓ Multi-jurisdictional insurance regulations
+✓ Pre-existing condition assessments
+✓ Waiting period calculations and exceptions
+✓ Network provider agreement analysis
+✓ Emergency coverage provisions
+✓ Financial liability assessments
+
+SYSTEMATIC ANALYSIS FRAMEWORK - Apply this 6-step process:
+
+**STEP 1: DEMOGRAPHIC VERIFICATION**
+- Verify age requirements (compare patient age vs policy age limits)
+- Check gender-specific coverage provisions
+- Assess dependent vs primary insured status
+- Validate geographical jurisdiction
+
+**STEP 2: PROCEDURE COVERAGE ANALYSIS**
+- Cross-reference procedure against covered benefits list
+- Check for specific procedure codes (CPT/ICD-10) if mentioned
+- Identify coverage category (medical, surgical, diagnostic, preventive)
+- Verify procedure necessity classification
+
+**STEP 3: TEMPORAL REQUIREMENTS ASSESSMENT**
+- Calculate exact policy duration vs waiting periods
+- Check for pre-existing condition waiting periods
+- Verify continuous coverage requirements
+- Assess grace period provisions
+
+**STEP 4: EXCLUSIONS AND LIMITATIONS REVIEW**
+- Systematically check all exclusion categories
+- Review dollar amount limitations and caps
+- Check for geographic restrictions
+- Verify provider network requirements
+
+**STEP 5: FINANCIAL LIABILITY CALCULATION**
+- Calculate base coverage amount
+- Apply applicable deductibles and co-payments
+- Factor in policy limits and sub-limits
+- Account for out-of-network penalties if applicable
+
+**STEP 6: NETWORK AND EMERGENCY PROVISIONS**
+- Verify provider network status
+- Check emergency coverage exceptions
+- Assess urgent vs elective procedure classifications
+- Review geographical coverage boundaries
+
+DECISION CATEGORIES (use exact terms):
+- "covered" - Procedure explicitly included, all requirements satisfied
+- "conditional" - Covered subject to specific documented conditions
+- "not_covered" - Procedure explicitly excluded from policy
+- "pending" - Insufficient information, specify exact missing details
+- "rejected" - Violates specific policy terms with evidence
+
+CONFIDENCE FRAMEWORK:
+- 0.95-1.0: Explicit policy language with no ambiguity
+- 0.85-0.94: Strong documentation with minor interpretation required
+- 0.70-0.84: Good evidence base with some policy gaps
+- 0.50-0.69: Moderate evidence requiring significant assumptions
+- 0.30-0.49: Limited evidence, high uncertainty
+- 0.00-0.29: Insufficient information for reliable assessment
+
+CRITICAL REQUIREMENTS:
+1. Reference specific document sections, page numbers, clause text
+2. Show exact calculations for financial assessments
+3. Provide step-by-step logical reasoning
+4. Identify information gaps with specificity
+5. Use precise insurance terminology
+6. Justify confidence levels with evidence quality assessment
+
+JSON Response Format:
+{
+    "decision": "covered/conditional/not_covered/pending/rejected",
+    "amount": numeric_value_or_null,
+    "detailed_analysis": {
+        "step1_demographics": "specific verification details",
+        "step2_procedure": "detailed coverage analysis",
+        "step3_temporal": "waiting period calculations",
+        "step4_exclusions": "systematic exclusion review",
+        "step5_financial": "detailed financial calculations",
+        "step6_network": "provider and emergency analysis"
+    },
+    "supporting_evidence": [
+        "Document: filename, Page: X, Section: Y.Z - exact clause text",
+        "Policy provision with specific reference"
+    ],
+    "information_gaps": [
+        "Specific missing information item 1",
+        "Specific missing information item 2"
+    ],
+    "conditions_if_approved": [
+        "Specific condition 1 with reference",
+        "Specific condition 2 with reference"
+    ],
+    "confidence_assessment": {
+        "overall_confidence": 0.0_to_1.0,
+        "evidence_quality": "assessment of available evidence",
+        "uncertainty_factors": ["factor1", "factor2"]
+    },
+    "expert_recommendations": [
+        "Specific recommendation 1",
+        "Specific recommendation 2"
+    ]
+}"""
+
+        # Build comprehensive context from all layers
+        organized_context = self._organize_multilayer_context(context_layers, completeness_metrics)
+
+        # Create detailed user prompt
+        user_prompt = f"""
+COMPREHENSIVE CLAIM ANALYSIS REQUEST
+
+**PATIENT CASE DETAILS:**
+Original Query: {query}
+
+**EXTRACTED INFORMATION:**
+{self._format_entities_for_analysis(entities)}
+
+**CONTEXT COMPLETENESS ASSESSMENT:**
+- Total Information Sources: {completeness_metrics['total_chunks_retrieved']} document sections
+- Layer Coverage: {completeness_metrics['layers_with_results']}/{completeness_metrics['total_layers']} information categories found
+- Completeness Score: {completeness_metrics['completeness_score']:.2f}
+- Information Gaps: {', '.join(completeness_metrics['information_gaps']) if completeness_metrics['information_gaps'] else 'None identified'}
+
+**MULTI-LAYER POLICY DOCUMENTATION:**
+
+{organized_context}
+
+**ANALYSIS INSTRUCTIONS:**
+Apply your systematic 6-step framework to this case. Pay special attention to:
+1. The completeness score ({completeness_metrics['completeness_score']:.2f}) - adjust confidence accordingly
+2. Any identified information gaps: {completeness_metrics['information_gaps']}
+3. Cross-reference information across multiple layers for consistency
+4. Provide specific clause references for all determinations
+5. Calculate exact amounts where coverage is confirmed
+6. If information is insufficient, specify exactly what additional details are needed
+
+**REQUIRED OUTPUT:**
+Provide your analysis in the specified JSON format with detailed step-by-step reasoning and specific evidence citations.
+"""
+
+        return self._generate_expert_response(system_prompt, user_prompt)
+
+    def _organize_multilayer_context(self, context_layers: Dict[str, List[Dict[str, Any]]],
+                                   completeness_metrics: Dict[str, Any]) -> str:
+        """Organize context from all layers into structured format"""
+
+        organized_sections = []
+
+        layer_descriptions = {
+            'procedure_specific': 'PROCEDURE COVERAGE INFORMATION',
+            'demographic_specific': 'AGE & DEMOGRAPHIC ELIGIBILITY',
+            'exclusions_limitations': 'EXCLUSIONS & LIMITATIONS',
+            'financial_terms': 'FINANCIAL TERMS & COVERAGE LIMITS',
+            'waiting_periods': 'WAITING PERIODS & TIMELINE REQUIREMENTS',
+            'geographical_network': 'NETWORK PROVIDERS & GEOGRAPHICAL COVERAGE',
+            'emergency_coverage': 'EMERGENCY & URGENT CARE PROVISIONS'
+        }
+
+        for layer_name, layer_data in context_layers.items():
+            if layer_data:
+                section_title = layer_descriptions.get(layer_name, layer_name.upper())
+                organized_sections.append(f"\n=== {section_title} ===")
+
+                # Add layer quality information
+                avg_relevance = sum(chunk.get('similarity_score', 0) for chunk in layer_data) / len(layer_data)
+                organized_sections.append(f"Quality Score: {avg_relevance:.3f} | Chunks: {len(layer_data)}")
+
+                # Add top chunks from this layer
+                sorted_chunks = sorted(layer_data, key=lambda x: x.get('similarity_score', 0), reverse=True)
+                for i, chunk in enumerate(sorted_chunks[:2]):  # Top 2 chunks per layer
+                    organized_sections.append(f"\n[Source {i+1}] Document: {chunk['metadata']['document']}")
+                    organized_sections.append(f"Relevance: {chunk.get('similarity_score', 0):.3f}")
+                    organized_sections.append(f"Content: {chunk['text']}")
+                    organized_sections.append("---")
+
+        # Add completeness assessment
+        organized_sections.append("\n=== INFORMATION COMPLETENESS ASSESSMENT ===")
+        for info_type, coverage in completeness_metrics['layer_coverage'].items():
+            status = "✓ FOUND" if coverage['found'] else "✗ MISSING"
+            organized_sections.append(f"{info_type}: {status}")
+            if coverage['found']:
+                organized_sections.append(f"  Sources: {coverage['chunk_count']}, Relevance: {coverage['avg_relevance']:.3f}")
+
+        return '\n'.join(organized_sections)
+
+    def _format_entities_for_analysis(self, entities: Dict[str, Any]) -> str:
+        """Format extracted entities for comprehensive analysis"""
+        formatted_sections = []
+
+        if 'age' in entities and entities['age']:
+            age_info = entities['age'][0]
+            formatted_sections.append(f"Patient Age: {age_info['value']} years (Category: {age_info.get('age_category', 'unknown')})")
+
+        if 'gender' in entities and entities['gender']:
+            gender_info = entities['gender'][0]
+            formatted_sections.append(f"Gender: {gender_info['value']}")
+
+        if 'medical_procedure' in entities and entities['medical_procedure']:
+            procedures = []
+            for proc in entities['medical_procedure']:
+                category = proc.get('category', 'unknown')
+                procedures.append(f"{proc['value']} ({category})")
+            formatted_sections.append(f"Medical Procedures: {', '.join(procedures)}")
+
+        if 'policy_duration' in entities and entities['policy_duration']:
+            duration_info = entities['policy_duration'][0]
+            if 'months_equivalent' in duration_info:
+                formatted_sections.append(f"Policy Duration: {duration_info['value']} {duration_info['unit']} ({duration_info['months_equivalent']} months equivalent, Category: {duration_info.get('category', 'unknown')})")
+
+        if 'location' in entities and entities['location']:
+            locations = [loc['text'] for loc in entities['location']]
+            formatted_sections.append(f"Treatment Location: {', '.join(locations)}")
+
+        if 'urgency' in entities and entities['urgency']:
+            urgency_info = entities['urgency'][0]
+            formatted_sections.append(f"Urgency Level: {urgency_info.get('level', 'unknown')} ({urgency_info['text']})")
+
+        if 'pre_existing' in entities and entities['pre_existing']:
+            conditions = [cond['text'] for cond in entities['pre_existing']]
+            formatted_sections.append(f"Pre-existing Conditions Mentioned: {', '.join(conditions)}")
+
+        if 'monetary_amount' in entities and entities['monetary_amount']:
+            amounts = []
+            for amount in entities['monetary_amount']:
+                amounts.append(f"{amount['currency']} {amount['value']:,.2f} ({amount.get('category', 'unknown')} amount)")
+            formatted_sections.append(f"Monetary Amounts: {', '.join(amounts)}")
+
+        return '\n'.join(formatted_sections) if formatted_sections else "No specific entities extracted"
+
+    def _generate_expert_response(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+        """Generate expert response with enhanced error handling"""
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+        data = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "max_tokens": 3500,  # Increased for comprehensive analysis
+            "temperature": 0.02,  # Very low for consistent expert analysis
+            "top_p": 0.85
+        }
+
+        try:
+            response = requests.post(f"{self.base_url}/chat/completions", headers=headers, json=data)
+            response.raise_for_status()
+
+            content = response.json()["choices"][0]["message"]["content"]
+
+            # Enhanced JSON extraction with better error handling
+            try:
+                # Try direct JSON parsing first
+                return json.loads(content)
+            except json.JSONDecodeError:
+                # Extract JSON from markdown code blocks
+                json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group(1))
+
+                # Extract JSON from text
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group())
+
+                # Return structured error response
+                return {
+                    "decision": "error",
+                    "amount": None,
+                    "detailed_analysis": {
+                        "error": "Failed to parse LLM response into structured format"
+                    },
+                    "supporting_evidence": [],
+                    "information_gaps": ["Complete analysis unavailable due to parsing error"],
+                    "conditions_if_approved": [],
+                    "confidence_assessment": {
+                        "overall_confidence": 0.0,
+                        "evidence_quality": "parsing_failed",
+                        "uncertainty_factors": ["response_parsing_error"]
+                    },
+                    "expert_recommendations": ["Retry analysis with different parameters"],
+                    "raw_response": content[:500] + "..." if len(content) > 500 else content
+                }
+
+        except Exception as e:
+            print(f"Error calling Mistral API: {str(e)}")
+            return {
+                "decision": "error",
+                "amount": None,
+                "detailed_analysis": {
+                    "error": f"API communication failed: {str(e)}"
+                },
+                "supporting_evidence": [],
+                "information_gaps": ["Analysis unavailable due to API error"],
+                "conditions_if_approved": [],
+                "confidence_assessment": {
+                    "overall_confidence": 0.0,
+                    "evidence_quality": "api_failed",
+                    "uncertainty_factors": ["api_communication_error"]
+                },
+                "expert_recommendations": ["Check API credentials and network connectivity"],
+                "api_error": str(e)
+            }
+
+class EnhancedMultiLayerRAG:
+    """Enhanced RAG system with comprehensive multi-layer analysis"""
+
+    def __init__(self, mistral_api_key: str):
+        self.doc_processor = AdvancedDocumentProcessor()
+        self.chunk_manager = SmartChunkManager()
+        self.vector_store = MultiLayerVectorStore()
+        self.query_processor = RobustQueryProcessor()
+        self.llm_analyzer = ExpertLLMAnalyzer(mistral_api_key)
+        self.documents_processed = False
+        self.processing_stats = {}
+
+    def setup_documents_enhanced(self, document_folder_path: str,
+                               chunk_size: int = 1200, chunk_overlap: int = 300):
+        """Enhanced document processing with optimal chunking"""
+        print("🚀 Processing documents with enhanced multi-layer pipeline...")
+
+        # Update chunk manager settings for better context preservation
+        self.chunk_manager.chunk_size = chunk_size
+        self.chunk_manager.chunk_overlap = chunk_overlap
+
+        all_chunks = []
+        processing_stats = {
+            'total_documents': 0,
+            'successful_documents': 0,
+            'total_chunks': 0,
+            'processing_time': 0,
+            'document_details': [],
+            'chunk_type_distribution': {},
+            'semantic_type_distribution': {}
+        }
+
+        start_time = datetime.now()
+        document_folder = Path(document_folder_path)
+
+        supported_files = []
+        for ext in ['.pdf', '.docx', '.txt', '.md']:
+            supported_files.extend(document_folder.glob(f"*{ext}"))
+
+        processing_stats['total_documents'] = len(supported_files)
+
+        for file_path in supported_files:
+            try:
+                print(f"📄 Processing: {file_path.name}")
+
+                # Extract text with enhanced processor
+                if file_path.suffix.lower() == '.pdf':
+                    doc_data = self.doc_processor.extract_text_from_pdf(str(file_path))
+                elif file_path.suffix.lower() == '.docx':
+                    doc_data = self.doc_processor.extract_text_from_docx(str(file_path))
+                else:
+                    doc_data = self.doc_processor.extract_text_from_txt(str(file_path))
+
+                if not doc_data['text'].strip():
+                    print(f"⚠️ Warning: No text extracted from {file_path.name}")
+                    continue
+
+                # Create smart chunks with enhanced metadata
+                chunks = self.chunk_manager.create_smart_chunks(doc_data, file_path.name)
+                all_chunks.extend(chunks)
+
+                # Track chunk distributions
+                for chunk in chunks:
+                    chunk_type = chunk.get('chunk_type', 'unknown')
+                    semantic_type = chunk.get('semantic_type', 'general')
+
+                    processing_stats['chunk_type_distribution'][chunk_type] = processing_stats['chunk_type_distribution'].get(chunk_type, 0) + 1
+                    processing_stats['semantic_type_distribution'][semantic_type] = processing_stats['semantic_type_distribution'].get(semantic_type, 0) + 1
+
+                doc_stats = {
+                    'filename': file_path.name,
+                    'chunks_created': len(chunks),
+                    'text_length': len(doc_data['text']),
+                    'structure_type': doc_data.get('structure_type', 'unknown'),
+                    'avg_chunk_size': sum(len(chunk['text']) for chunk in chunks) / len(chunks) if chunks else 0
+                }
+                processing_stats['document_details'].append(doc_stats)
+                processing_stats['successful_documents'] += 1
+
+                print(f"  ✅ Created {len(chunks)} chunks ({doc_data.get('structure_type', 'unknown')} structure)")
+
+            except Exception as e:
+                print(f"❌ Error processing {file_path.name}: {str(e)}")
+                continue
+
+        # Add chunks to enhanced vector store
+        if all_chunks:
+            self.vector_store.add_chunks_enhanced(all_chunks)
+            self.documents_processed = True
+            processing_stats['total_chunks'] = len(all_chunks)
+
+        processing_stats['processing_time'] = (datetime.now() - start_time).total_seconds()
+        self.processing_stats = processing_stats
+
+        # Print comprehensive summary
+        self._print_processing_summary(processing_stats)
+
+    def _print_processing_summary(self, stats: Dict[str, Any]):
+        """Print comprehensive processing summary"""
+        print(f"\n📊 ENHANCED PROCESSING SUMMARY")
+        print(f"{'='*50}")
+        print(f"Documents processed: {stats['successful_documents']}/{stats['total_documents']}")
+        print(f"Total chunks created: {stats['total_chunks']}")
+        print(f"Processing time: {stats['processing_time']:.2f} seconds")
+        print(f"Average chunks per document: {stats['total_chunks']/max(stats['successful_documents'], 1):.1f}")
+
+        print(f"\n📈 CHUNK TYPE DISTRIBUTION:")
+        for chunk_type, count in stats['chunk_type_distribution'].items():
+            percentage = (count / stats['total_chunks']) * 100
+            print(f"  {chunk_type}: {count} ({percentage:.1f}%)")
+
+        print(f"\n🎯 SEMANTIC TYPE DISTRIBUTION:")
+        for semantic_type, count in stats['semantic_type_distribution'].items():
+            percentage = (count / stats['total_chunks']) * 100
+            print(f"  {semantic_type}: {count} ({percentage:.1f}%)")
+
+    def comprehensive_query_analysis(self, query: str, n_results_per_layer: int = 3) -> Dict[str, Any]:
+        """Comprehensive query analysis with multi-layer context extraction"""
+
+        if not self.documents_processed:
+            return {"error": "Documents not processed yet. Please run setup_documents_enhanced first."}
+
+        start_time = datetime.now()
+        print(f"\n🔍 COMPREHENSIVE ANALYSIS: {query}")
+        print(f"{'='*60}")
+
+        # Step 1: Enhanced query structuring with comprehensive entity extraction
+        print("Step 1: Enhanced Query Processing...")
+        structured_query = self.query_processor.structure_query_enhanced(query)
+
+        print(f"  Primary Intent: {structured_query['intent']['primary_intent']} (confidence: {structured_query['confidence']:.2f})")
+        print(f"  Secondary Intents: {', '.join(structured_query['intent']['secondary_intents'])}")
+        print(f"  Entities Extracted: {list(structured_query['all_entities'].keys())}")
+        print(f"  Query Complexity: {structured_query['intent']['query_complexity']}")
+
+        # Step 2: Multi-layer context extraction (7 layers)
+        print(f"\nStep 2: Multi-Layer Context Extraction...")
+        context_layers = self.vector_store.multi_layer_context_extraction(
+            query,
+            structured_query['all_entities'],
+            n_results_per_layer
+        )
+
+        # Step 3: Context completeness assessment
+        print(f"\nStep 3: Context Completeness Assessment...")
+        completeness_metrics = self.vector_store.assess_context_completeness(
+            context_layers,
+            structured_query['all_entities']
+        )
+
+        print(f"  Total chunks retrieved: {completeness_metrics['total_chunks_retrieved']}")
+        print(f"  Layer coverage: {completeness_metrics['layers_with_results']}/{completeness_metrics['total_layers']}")
+        print(f"  Completeness score: {completeness_metrics['completeness_score']:.2f}")
+
+        if completeness_metrics['information_gaps']:
+            print(f"  ⚠️ Information gaps: {', '.join(completeness_metrics['information_gaps'])}")
+        else:
+            print(f"  ✅ No information gaps identified")
+
+        # Step 4: Expert LLM analysis with comprehensive framework
+        print(f"\nStep 4: Expert Analysis Framework...")
+        expert_response = self.llm_analyzer.comprehensive_analysis(
+            context_layers,
+            completeness_metrics,
+            query,
+            structured_query['all_entities']
+        )
+
+        # Step 5: Compile comprehensive response
+        processing_time = (datetime.now() - start_time).total_seconds()
+
+        comprehensive_response = {
+            'query': query,
+            'processing_time': processing_time,
+            'structured_query_analysis': structured_query,
+            'multi_layer_context': {
+                'layers_extracted': list(context_layers.keys()),
+                'total_chunks_per_layer': {layer: len(results) for layer, results in context_layers.items()},
+                'layer_quality_scores': {
+                    layer: sum(chunk.get('similarity_score', 0) for chunk in results) / len(results) if results else 0
+                    for layer, results in context_layers.items()
+                }
+            },
+            'context_completeness': completeness_metrics,
+            'expert_analysis': expert_response,
+            'system_performance': {
+                'query_understanding_confidence': structured_query['confidence'],
+                'context_completeness_score': completeness_metrics['completeness_score'],
+                'analysis_confidence': expert_response.get('confidence_assessment', {}).get('overall_confidence', 0.0),
+                'overall_system_confidence': self._calculate_overall_confidence(
+                    structured_query['confidence'],
+                    completeness_metrics['completeness_score'],
+                    expert_response.get('confidence_assessment', {}).get('overall_confidence', 0.0)
+                )
+            },
+            'retrieved_context': context_layers  # Full context for transparency
+        }
+
+        # Print final results
+        self._print_analysis_summary(comprehensive_response)
+
+        return comprehensive_response
+
+    def _calculate_overall_confidence(self, query_confidence: float,
+                                    completeness_score: float,
+                                    analysis_confidence: float) -> float:
+        """Calculate weighted overall system confidence"""
+        # Weighted average: query understanding (20%), context completeness (40%), analysis quality (40%)
+        weights = [0.2, 0.4, 0.4]
+        scores = [query_confidence, completeness_score, analysis_confidence]
+
+        return sum(w * s for w, s in zip(weights, scores))
+
+    def _print_analysis_summary(self, response: Dict[str, Any]):
+        """Print comprehensive analysis summary"""
+        expert_analysis = response['expert_analysis']
+        system_performance = response['system_performance']
+
+        print(f"\n🎯 ANALYSIS RESULTS")
+        print(f"{'='*50}")
+        print(f"Decision: {expert_analysis.get('decision', 'unknown').upper()}")
+
+        if expert_analysis.get('amount'):
+            print(f"Amount: {expert_analysis['amount']:,.2f}")
+
+        print(f"\n📊 CONFIDENCE METRICS:")
+        print(f"  Query Understanding: {system_performance['query_understanding_confidence']:.2f}")
+        print(f"  Context Completeness: {system_performance['context_completeness_score']:.2f}")
+        print(f"  Analysis Quality: {system_performance['analysis_confidence']:.2f}")
+        print(f"  Overall System Confidence: {system_performance['overall_system_confidence']:.2f}")
+
+        if expert_analysis.get('information_gaps'):
+            print(f"\n⚠️ INFORMATION GAPS:")
+            for gap in expert_analysis['information_gaps']:
+                print(f"  • {gap}")
+
+        if expert_analysis.get('conditions_if_approved'):
+            print(f"\n📋 CONDITIONS:")
+            for condition in expert_analysis['conditions_if_approved']:
+                print(f"  • {condition}")
+
+        print(f"\n⚡ Processing Time: {response['processing_time']:.2f} seconds")
+
+    def batch_comprehensive_analysis(self, queries: List[str], save_results: bool = True) -> List[Dict[str, Any]]:
+        """Process multiple queries with comprehensive analysis"""
+        results = []
+
+        print(f"🚀 BATCH COMPREHENSIVE ANALYSIS")
+        print(f"Processing {len(queries)} queries with multi-layer framework...")
+        print(f"{'='*60}")
+
+        for i, query in enumerate(queries, 1):
+            print(f"\n--- QUERY {i}/{len(queries)} ---")
+            result = self.comprehensive_query_analysis(query)
+            results.append(result)
+
+            # Print quick summary
+            if 'expert_analysis' in result:
+                decision = result['expert_analysis'].get('decision', 'unknown')
+                confidence = result['system_performance']['overall_system_confidence']
+                print(f"✅ Result: {decision.upper()} (confidence: {confidence:.2f})")
+
+        # Save comprehensive results
+        if save_results:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            results_file = f"/content/drive/MyDrive/comprehensive_rag_results_{timestamp}.json"
+            try:
+                # Create summary for saving
+                summary_results = []
+                for result in results:
+                    summary = {
+                        'query': result['query'],
+                        'processing_time': result['processing_time'],
+                        'decision': result['expert_analysis'].get('decision'),
+                        'amount': result['expert_analysis'].get('amount'),
+                        'confidence_scores': result['system_performance'],
+                        'information_gaps': result['expert_analysis'].get('information_gaps', []),
+                        'supporting_evidence': result['expert_analysis'].get('supporting_evidence', [])
+                    }
+                    summary_results.append(summary)
+
+                with open(results_file, 'w') as f:
+                    json.dump(summary_results, f, indent=2, default=str)
+                print(f"\n💾 Results saved to: {results_file}")
+            except Exception as e:
+                print(f"\n⚠️ Could not save results: {str(e)}")
+
+        return results
+
+    def get_comprehensive_system_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive system statistics and performance metrics"""
+        if not self.documents_processed:
+            return {"error": "No documents processed yet"}
+
+        try:
+            collection_count = self.vector_store.collection.count()
+
+            stats = {
+                'processing_statistics': self.processing_stats,
+                'vector_store_statistics': {
+                    'total_chunks': collection_count,
+                    'collection_name': self.vector_store.collection.name,
+                    'embedding_model': 'all-MiniLM-L6-v2',
+                    'vector_dimensions': 384
+                },
+                'system_capabilities': {
+                    'entity_extraction': 'spaCy NER + Enhanced custom patterns',
+                    'chunking_strategy': 'Multi-strategy with structure preservation',
+                    'context_layers': 7,
+                    'llm_model': self.llm_analyzer.model,
+                    'search_strategies': 'Multi-layer semantic + metadata filtering',
+                    'analysis_framework': '6-step expert methodology'
+                },
+                'layer_descriptions': {
+                    'procedure_specific': 'Targeted medical procedure coverage',
+                    'demographic_specific': 'Age and demographic eligibility',
+                    'exclusions_limitations': 'Policy exclusions and restrictions',
+                    'financial_terms': 'Coverage amounts and financial terms',
+                    'waiting_periods': 'Timeline and waiting period requirements',
+                    'geographical_network': 'Provider networks and location coverage',
+                    'emergency_coverage': 'Emergency and urgent care provisions'
+                },
+                'performance_optimizations': {
+                    'chunk_size': self.chunk_manager.chunk_size,
+                    'chunk_overlap': self.chunk_manager.chunk_overlap,
+                    'results_per_layer': 3,
+                    'max_tokens_llm': 3500,
+                    'temperature': 0.02
+                }
+            }
+
+            return stats
+        except Exception as e:
+            return {"error": f"Could not retrieve statistics: {str(e)}"}
+
+# Enhanced Usage Examples and Setup
+def setup_comprehensive_environment():
+    """Setup comprehensive environment with all dependencies"""
+    print("🚀 Setting up comprehensive multi-layer RAG environment...")
+
+    # Install packages in correct order
+    install_commands = [
+        "pip install -q langchain langchain-text-splitters",
+        "pip install -q chromadb sentence-transformers",
+        "pip install -q PyPDF2 python-docx",
+        "pip install -q mistralai spacy nltk tiktoken",
+        "python -m spacy download en_core_web_sm"
+    ]
+
+    for cmd in install_commands:
+        os.system(cmd)
+
+    # Mount Google Drive
+    try:
+        drive.mount('/content/drive')
+        print("✅ Google Drive mounted successfully")
+    except:
+        print("⚠️ Google Drive mounting failed or already mounted")
+
+    print("✅ Comprehensive environment setup complete!")
+
+def run_comprehensive_example():
+    """Run the enhanced multi-layer RAG system example"""
+
+    # 1. Setup environment
+    setup_comprehensive_environment()
+
+    # 2. Initialize enhanced RAG system
+    MISTRAL_API_KEY = "EDCCtoTed2RK7dLQCqrEeA1hyLvi2AaZ"  # Replace with your actual key
+    rag_system = EnhancedMultiLayerRAG(MISTRAL_API_KEY)
+
+    # 3. Setup documents with enhanced processing
+    documents_path = "/content/drive/MyDrive/policy_docs"  # Update with your path
+    rag_system.setup_documents_enhanced(
+        documents_path,
+        chunk_size=1200,   # Optimal for context preservation
+        chunk_overlap=300   # Better continuity between chunks
+    )
+
+    # 4. Test with comprehensive queries
+    comprehensive_test_queries = [
+        "46-year-old male, knee surgery in Pune, 3-month-old insurance policy, diabetic patient",
+        "Emergency heart bypass surgery for 65-year-old woman in Mumbai, policy purchased 8 months ago, pre-existing hypertension",
+        "Young adult 25 years, routine dental cleaning and root canal, Chennai location, brand new policy just 2 weeks old",
+        "Critical appendix surgery for 30-year-old woman, Bangalore emergency hospital, 6-month comprehensive health insurance, no pre-existing conditions",
+        "Is cosmetic nose surgery covered for a 40-year-old male with premium policy purchased 2 years ago?",
+        "What is the maximum claim amount for sports injury treatment including physiotherapy for a 28-year-old athlete?"
+    ]
+
+    # 5. Run comprehensive batch analysis
+    print(f"\n🎯 Running comprehensive analysis on {len(comprehensive_test_queries)} complex queries...")
+    results = rag_system.batch_comprehensive_analysis(comprehensive_test_queries, save_results=True)
+
+    # 6. Display comprehensive system statistics
+    stats = rag_system.get_comprehensive_system_statistics()
+    print(f"\n📊 COMPREHENSIVE SYSTEM STATISTICS")
+    print(f"{'='*60}")
+    print(json.dumps(stats, indent=2, default=str))
+
+    # 7. Generate performance report
+    print(f"\n📈 PERFORMANCE ANALYSIS")
+    print(f"{'='*50}")
+
+    if results:
+        avg_processing_time = sum(r['processing_time'] for r in results) / len(results)
+        avg_confidence = sum(r['system_performance']['overall_system_confidence'] for r in results) / len(results)
+
+        decisions = [r['expert_analysis'].get('decision', 'unknown') for r in results]
+        decision_distribution = {decision: decisions.count(decision) for decision in set(decisions)}
+
+        print(f"Average processing time: {avg_processing_time:.2f} seconds")
+        print(f"Average system confidence: {avg_confidence:.2f}")
+        print(f"Decision distribution: {decision_distribution}")
+
+        # Identify high-confidence vs low-confidence decisions
+        high_confidence = [r for r in results if r['system_performance']['overall_system_confidence'] >= 0.8]
+        print(f"High confidence decisions (≥0.8): {len(high_confidence)}/{len(results)}")
+
+    return rag_system, results
+
+if __name__ == "__main__":
+    # Run the comprehensive enhanced example
+    system, results = run_comprehensive_example()
